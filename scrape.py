@@ -6,22 +6,26 @@ import re
 import random
 
 def clean_title(text):
-    """清洗标题：去除首尾空格，解决重复问题"""
+    """清洗标题"""
+    if not text: return ""
     text = text.strip()
+    # 去除多余的换行和空格
+    text = re.sub(r'\s+', ' ', text)
+    # 解决重复标题问题
     mid = len(text) // 2
-    if len(text) > 10 and text[:mid] == text[mid:]:
+    if len(text) > 12 and text[:mid] == text[mid:]:
         return text[:mid]
     return text
 
 def scrape_zhonglun():
-    # --- 策略升级：同时抓取“业绩”和“新闻”两个页面 ---
     urls = [
-        "https://www.zhonglun.com/performance.html", # 业绩页
-        "https://www.zhonglun.com/news.html"        # 新闻页 (这里往往更新更快)
+        "https://www.zhonglun.com/news.html",       # 新闻资讯 (通常更新最快)
+        "https://www.zhonglun.com/performance.html" # 业绩概览
     ]
     
-    all_cases = [] # 暂存所有抓到的数据
+    all_cases = []
     
+    # 随机浏览器指纹
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/119.0.0.0 Safari/537.36"
@@ -29,80 +33,107 @@ def scrape_zhonglun():
 
     for url in urls:
         try:
-            print(f"正在抓取: {url} ...")
+            print(f"--- 正在抓取: {url} ---")
             headers = {
                 "User-Agent": random.choice(user_agents),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Referer": "https://www.zhonglun.com/"
             }
             
-            response = requests.get(url, headers=headers, timeout=20)
+            # 发送请求
+            response = requests.get(url, headers=headers, timeout=25)
             response.encoding = 'utf-8'
+            
+            print(f"状态码: {response.status_code}, 页面大小: {len(response.text)} 字符")
+            
+            if response.status_code != 200:
+                continue
 
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # 查找所有列表项
-                all_list_items = soup.find_all('li')
-                
-                for item in all_list_items:
-                    # 1. 必须包含日期 (YYYY-MM-DD)
-                    full_text = item.get_text(strip=True)
-                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', full_text)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # === 核弹级策略：扫描页面所有链接 ===
+            # 不再局限于 li 或 div，只要是链接就检查
+            links = soup.find_all('a')
+            
+            for link in links:
+                try:
+                    # 1. 获取链接文本
+                    title = link.get_text(strip=True)
+                    href = link.get('href', '')
                     
-                    if not date_match: continue
-                    date = date_match.group(1)
+                    if not href or len(title) < 6: continue # 标题太短跳过
                     
-                    # 2. 找链接和标题
-                    link_tag = item.find('a')
-                    if not link_tag: continue
+                    # 排除显而易见的非新闻链接
+                    if any(x in href for x in ['javascript', 'mailto', 'tel:', '#']): continue
                     
-                    raw_title = link_tag.get_text(strip=True)
-                    title = clean_title(raw_title)
-                    href = link_tag.get('href', '')
+                    # 2. 寻找日期 (支持 -, ., / 三种分隔符)
+                    # 策略A: 在链接文本里找
+                    # 策略B: 在链接的父级元素里找 (比如 li > a + span)
                     
-                    if not href or len(title) < 5: continue
+                    date_pattern = r'(202[3-6][-./年]\d{1,2}[-./月]\d{1,2})'
                     
-                    if not href.startswith('http'):
-                        href = 'https://www.zhonglun.com' + href
+                    # 先看这一行的所有文本（包括链接自己和它旁边的字）
+                    # 向上找3层父级，确保能涵盖 li 或 div
+                    parent_text = ""
+                    curr = link
+                    for _ in range(3):
+                        if curr.parent:
+                            curr = curr.parent
+                            parent_text += " " + curr.get_text(strip=True)
+                        else:
+                            break
                     
-                    # 3. 放入暂存区 (防止不同页面抓到重复的)
-                    if not any(c['link'] == href for c in all_cases):
-                        all_cases.append({
-                            "title": title,
-                            "date": date,
-                            "tag": "最新动态",
-                            "link": href
-                        })
-
-            else:
-                print(f"网页 {url} 返回错误: {response.status_code}")
+                    match = re.search(date_pattern, parent_text)
+                    
+                    if match:
+                        date_str = match.group(1)
+                        # 统一格式化为 YYYY-MM-DD
+                        date_str = date_str.replace('.','-').replace('/','-').replace('年','-').replace('月','-').strip()
+                        
+                        # 补全链接
+                        if not href.startswith('http'):
+                            href = 'https://www.zhonglun.com' + href
+                        
+                        # 清洗标题
+                        clean_t = clean_title(title)
+                        
+                        # 3. 存入 (去重)
+                        if not any(c['link'] == href for c in all_cases):
+                            print(f"发现: {date_str} - {clean_t[:10]}...")
+                            all_cases.append({
+                                "title": clean_t,
+                                "date": date_str,
+                                "tag": "最新动态",
+                                "link": href
+                            })
+                            
+                except Exception as inner_e:
+                    continue
 
         except Exception as e:
-            print(f"抓取 {url} 出错: {e}")
+            print(f"抓取错误: {e}")
 
-    # --- 核心逻辑：排序 ---
-    # 无论先抓哪个页面，最后统一按日期倒序排列 (最新的在最前)
-    # x['date'] 是字符串，'2025-12-05' > '2025-11-28'，可以直接比大小
+    # --- 排序与保存 ---
+    # 按日期倒序 (最新的在最前)
     all_cases.sort(key=lambda x: x['date'], reverse=True)
     
-    # 只保留最新的 10 条
+    # 截取前 10 条
     final_cases = all_cases[:10]
 
-    # --- 结果处理 ---
+    # 如果还是没抓到
     if len(final_cases) == 0:
-        print("未抓到数据，使用系统默认消息")
+        print("警告：全网扫描未发现带日期的新闻。")
         final_cases = [
             {
-                "title": "中伦官网数据同步中...", 
+                "title": "中伦官网数据同步中 (暂未匹配到新闻)", 
                 "date": time.strftime("%Y-%m-%d"), 
                 "tag": "系统消息", 
                 "link": "https://www.zhonglun.com"
             }
         ]
     else:
-        print(f"共抓取并排序了 {len(final_cases)} 条最新数据！最新日期为: {final_cases[0]['date']}")
+        print(f"✅ 抓取成功！共找到 {len(final_cases)} 条新闻，最新日期: {final_cases[0]['date']}")
 
-    # 保存
     with open('cases.json', 'w', encoding='utf-8') as f:
         json.dump(final_cases, f, ensure_ascii=False, indent=2)
 
