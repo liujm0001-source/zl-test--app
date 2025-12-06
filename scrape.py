@@ -4,130 +4,110 @@ import json
 import time
 import re
 import random
+import urllib3
 
-def clean_title(text):
-    if not text: return ""
-    text = text.strip()
-    text = re.sub(r'\s+', ' ', text)
-    mid = len(text) // 2
-    if len(text) > 12 and text[:mid] == text[mid:]:
-        return text[:mid]
-    return text
+# 禁用安全警告（因为我们特意关掉了SSL验证）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def scrape_zhonglun():
-    urls = [
-        "https://www.zhonglun.com/news.html", 
-        "https://www.zhonglun.com/performance.html"
-    ]
+    # 你的策略：只抓新闻资讯页
+    url = "https://www.zhonglun.com/news.html"
     
-    all_cases = []
+    cases = []
     
-    # 随机 User-Agent 池
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-    ]
+    # 模拟最新的 Chrome 浏览器
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Referer": "https://www.zhonglun.com/",
+        "Connection": "keep-alive"
+    }
 
-    for url in urls:
-        try:
-            print(f"--- 正在抓取: {url} ---")
-            
-            # === 超级伪装 Headers ===
-            headers = {
-                "User-Agent": random.choice(user_agents),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8", # 告诉服务器我是中文用户
-                "Cache-Control": "max-age=0",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Referer": "https://www.google.com/" # 伪装成从谷歌搜索点进来的
-            }
-            
-            # 增加 2 秒延迟，模拟人类反应
-            time.sleep(2)
-            
-            response = requests.get(url, headers=headers, timeout=30)
-            response.encoding = 'utf-8'
-            
-            print(f"状态码: {response.status_code}")
-            
-            # 如果还是 500 或 403，打印一部分内容看看是什么鬼
-            if response.status_code != 200:
-                print(f"被拦截内容预览: {response.text[:100]}...")
-                continue
+    try:
+        print(f"--- 正在精准抓取: {url} ---")
+        
+        # verify=False 是关键！防止防火墙因为证书问题拦截
+        response = requests.get(url, headers=headers, timeout=30, verify=False)
+        response.encoding = 'utf-8' # 强制 UTF-8，防止乱码
+        
+        print(f"状态码: {response.status_code}")
 
+        if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 扫描所有链接
-            links = soup.find_all('a')
-            print(f"页面内链接数量: {len(links)}") # 调试信息
+            # 中伦新闻页通常是 ul.news_list > li 结构
+            # 我们查找所有 li，只要里面有日期和链接就行
+            items = soup.find_all('li')
             
-            count_found = 0
-            for link in links:
+            print(f"页面包含列表项: {len(items)} 个")
+            
+            for item in items:
                 try:
+                    # 1. 找日期 (兼容 span 或 div)
+                    text_content = item.get_text()
+                    # 正则找 202x-xx-xx
+                    date_match = re.search(r'(202[3-5]-\d{2}-\d{2})', text_content)
+                    
+                    if not date_match: continue
+                    date = date_match.group(1)
+                    
+                    # 2. 找标题链接
+                    link = item.find('a')
+                    if not link: continue
+                    
                     title = link.get_text(strip=True)
                     href = link.get('href', '')
                     
-                    if not href or len(title) < 6: continue
-                    if any(x in href for x in ['javascript', 'mailto', '#']): continue
+                    # 3. 过滤无效数据
+                    if len(title) < 5: continue # 标题太短肯定不是新闻
+                    if "javascript" in href: continue
                     
-                    # 宽松的日期匹配：只要有 202x 年/月/日 格式
-                    date_pattern = r'(202[3-6][-./年]\d{1,2}[-./月]\d{1,2})'
-                    
-                    # 扩大搜索范围：链接自己 + 父级 + 爷爷级
-                    search_text = str(link)
-                    if link.parent: search_text += str(link.parent)
-                    if link.parent and link.parent.parent: search_text += str(link.parent.parent)
-
-                    match = re.search(date_pattern, search_text)
-                    
-                    if match:
-                        date_str = match.group(1).replace('.','-').replace('/','-').replace('年','-').replace('月','-').strip()
+                    # 补全链接
+                    if not href.startswith('http'):
+                        href = 'https://www.zhonglun.com' + href
                         
-                        if not href.startswith('http'):
-                            href = 'https://www.zhonglun.com' + href
-                        
-                        clean_t = clean_title(title)
-                        
-                        if not any(c['link'] == href for c in all_cases):
-                            all_cases.append({
-                                "title": clean_t,
-                                "date": date_str,
-                                "tag": "最新动态",
-                                "link": href
-                            })
-                            count_found += 1
+                    # 4. 存入 (去重)
+                    if not any(c['link'] == href for c in cases):
+                        # 处理一下重复标题 (有时候网页源码里标题会写两遍)
+                        if len(title) > 10 and title[:len(title)//2] == title[len(title)//2:]:
+                            title = title[:len(title)//2]
                             
-                except: continue
-            
-            print(f"本页面找到 {count_found} 条新闻")
+                        print(f"抓到: {date} - {title[:10]}...")
+                        cases.append({
+                            "title": title,
+                            "date": date,
+                            "tag": "最新交易", # 统一标记
+                            "link": href
+                        })
+                        
+                except Exception as e:
+                    continue
+        else:
+            print("网页访问失败")
 
-        except Exception as e:
-            print(f"抓取错误: {e}")
+    except Exception as e:
+        print(f"脚本运行出错: {e}")
 
-    # 排序与保存
-    all_cases.sort(key=lambda x: x['date'], reverse=True)
-    final_cases = all_cases[:10]
+    # --- 排序与保存 ---
+    # 按照日期从新到旧排序
+    cases.sort(key=lambda x: x['date'], reverse=True)
+    
+    # 只留前 10 条
+    final_cases = cases[:10]
 
-    # --- 终极保底 ---
-    # 如果这次还抓不到，说明 GitHub IP 被永久拉黑了
-    # 我们为了不让页面挂掉，写入一条提示
+    # 保底显示
     if len(final_cases) == 0:
-        print("警告：伪装后仍未抓到数据。")
+        print("⚠️ 警告：未匹配到数据。")
         final_cases = [
             {
-                "title": "系统正在维护中，请稍后访问官网查看最新业绩", 
+                "title": "暂无最新数据 (请检查网络或官网状态)", 
                 "date": time.strftime("%Y-%m-%d"), 
                 "tag": "提示", 
-                "link": "https://www.zhonglun.com"
+                "link": "https://www.zhonglun.com/news.html"
             }
         ]
     else:
-        print(f"✅ 成功！抓取到 {len(final_cases)} 条数据。")
+        print(f"✅ 成功！抓取到 {len(final_cases)} 条最新交易。")
 
     with open('cases.json', 'w', encoding='utf-8') as f:
         json.dump(final_cases, f, ensure_ascii=False, indent=2)
