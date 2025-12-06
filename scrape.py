@@ -1,4 +1,4 @@
-```python
+
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -70,4 +70,3 @@ def scrape_zhonglun():
 
 if __name__ == "__main__":
     scrape_zhonglun()
-```
