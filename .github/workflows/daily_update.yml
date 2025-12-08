@@ -2,8 +2,8 @@ name: Daily Scrape Cases
 
 on:
   schedule:
-    - cron: '0 18 * * *' # 对应北京时间凌晨 2:00
-  workflow_dispatch: # 允许你手动点击按钮触发
+    - cron: '0 18 * * *' # 北京时间凌晨 2:00
+  workflow_dispatch: # 允许手动触发
 
 jobs:
   build:
@@ -20,16 +20,20 @@ jobs:
       with:
         python-version: '3.9'
 
+    # --- 关键修复在这里：安装必要的库 ---
     - name: Install dependencies
       run: |
-        pip install requests duckduckgo-search typing_extensions
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4
 
     - name: Run scraper
       run: python scrape.py
 
+    # --- 防止冲突的上传配置 ---
     - name: Commit and push if changes
       run: |
         git config --global user.name 'GitHub Action'
         git config --global user.email 'action@github.com'
         git add cases.json
-        git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update cases.json" && git push)
+        # 如果有变动，先拉取最新代码(rebase)再提交，防止冲突
+        git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update cases.json" && git pull --rebase && git push)
