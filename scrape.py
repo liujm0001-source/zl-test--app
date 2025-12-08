@@ -1,114 +1,73 @@
-from curl_cffi import requests # 这里用了特种库，不是普通的 requests
-from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 import json
 import time
 import re
 
-def scrape_zhonglun():
-    # 直捣黄龙：只抓新闻列表页
-    url = "https://www.zhonglun.com/news.html"
+def scrape_via_search():
+    # 搜索关键词：限定在中伦新闻板块，包含“助力”或“代表”的词
+    # time='m' 表示只搜“过去一个月”的，确保新鲜
+    keywords = "site:zhonglun.com/news (助力 OR 代表 OR 上市 OR 并购)"
+    
+    print(f"--- 正在通过搜索引擎查找: {keywords} ---")
     
     cases = []
     
-    print(f"--- 正在启动特种伪装 (Chrome 120) 访问: {url} ---")
-
     try:
-        # === 核心黑科技 ===
-        # impersonate="chrome120": 模拟 Chrome 120 的所有底层指纹
-        session = requests.Session()
-        response = session.get(
-            url, 
-            impersonate="chrome120", 
-            timeout=30
-        )
-        # 手动修正编码，防止乱码
-        response.encoding = 'utf-8'
-
-        print(f"状态码: {response.status_code}")
-
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
+        # 使用 DuckDuckGo 搜索
+        # region='cn-zh' 优先找中文结果
+        # time='m' 限制过去一个月
+        # max_results=15 抓取前15条
+        results = DDGS().text(keywords, region='cn-zh', time='m', max_results=15)
+        
+        for r in results:
+            title = r.get('title', '')
+            href = r.get('href', '')
+            body = r.get('body', '') # 摘要，里面通常包含日期
             
-            # 查找新闻列表 (通常在 ul.news_list 里，但我们用宽泛策略找 li)
-            items = soup.find_all('li')
-            print(f"扫描到列表项: {len(items)} 个")
+            # 1. 简单清洗标题
+            # 搜索结果标题通常带有 " - 中伦律师事务所"，我们要去掉
+            title = title.split(' - ')[0].split(' | ')[0]
             
-            for item in items:
-                try:
-                    # 1. 找日期 (兼容 202x-xx-xx 或 202x.xx.xx)
-                    text = item.get_text()
-                    date_match = re.search(r'(202[3-6][-./]\d{1,2}[-./]\d{1,2})', text)
-                    if not date_match: continue
-                    
-                    # 格式化日期为 YYYY-MM-DD
-                    date_str = date_match.group(1).replace('.', '-').replace('/', '-')
-                    
-                    # 2. 找链接和标题
-                    link_tag = item.find('a')
-                    if not link_tag: continue
-                    
-                    title = link_tag.get_text(strip=True)
-                    href = link_tag.get('href', '')
-                    
-                    # 3. 过滤垃圾数据
-                    if len(title) < 6: continue
-                    if "javascript" in href: continue
-                    
-                    # 4. 关键词过滤：只保留真正有价值的“交易/业绩”
-                    # 如果你希望展示所有新闻，可以把下面这几行注释掉
-                    keywords = ['助力', '代表', '协助', '获选', '荣获', '上市', '并购', '投资', '成功']
-                    if not any(k in title for k in keywords):
-                        continue
-
-                    # 5. 补全链接
-                    if not href.startswith('http'):
-                        href = 'https://www.zhonglun.com' + href
-                        
-                    # 6. 清洗重复标题 (ABCABC -> ABC)
-                    if len(title) > 12 and title[:len(title)//2] == title[len(title)//2:]:
-                        title = title[:len(title)//2]
-
-                    # 7. 存入
-                    if not any(c['link'] == href for c in cases):
-                        print(f"✅ 抓取到: {date_str} - {title[:15]}...")
-                        cases.append({
-                            "title": title,
-                            "date": date_str,
-                            "tag": "最新交易", # 加上这个标签显得很专业
-                            "link": href
-                        })
-                        
-                except Exception as e:
-                    continue
-        else:
-            print("网页依然拒绝访问，可能IP被封锁")
+            # 2. 尝试从摘要里提取日期，如果没有就用今天
+            # 摘要里通常会有 "2 days ago" 或者 "2023..."
+            date = time.strftime("%Y-%m-%d")
+            
+            # 尝试匹配日期格式 YYYY-MM-DD
+            date_match = re.search(r'(202[3-6][-./年]\d{1,2}[-./月]\d{1,2})', body)
+            if date_match:
+                date = date_match.group(1).replace('.','-').replace('/','-').replace('年','-').replace('月','-')
+            
+            # 3. 存入结果
+            if not any(c['link'] == href for c in cases):
+                print(f"🔍 搜到: {title[:15]}...")
+                cases.append({
+                    "title": title,
+                    "date": date,
+                    "tag": "最新交易", # 统一打标
+                    "link": href
+                })
 
     except Exception as e:
-        print(f"发生错误: {e}")
+        print(f"搜索出错: {e}")
 
-    # --- 排序与输出 ---
-    # 按日期倒序
-    cases.sort(key=lambda x: x['date'], reverse=True)
-    final_cases = cases[:12] # 取前12条，内容丰富点
-
-    if len(final_cases) > 0:
-        print(f"🎉 最终成功获取 {len(final_cases)} 条高价值数据！")
-        with open('cases.json', 'w', encoding='utf-8') as f:
-            json.dump(final_cases, f, ensure_ascii=False, indent=2)
-    else:
-        print("⚠️ 警告：策略失败，写入默认数据")
-        # 最后的防线：如果还失败，写死几条昨天刚发生的新闻，保证演示效果
-        # 这里你可以手动去官网抄几条最新的填进去，以防万一
-        fallback_data = [
+    # --- 兜底逻辑 ---
+    # 如果搜不到（极少情况），写入一条提示
+    if len(cases) == 0:
+        print("⚠️ 搜索引擎未返回数据")
+        cases = [
             {
-                "title": "中伦助力海伟股份在香港联交所主板上市 (实时同步失败)",
-                "date": "2025-12-05",
-                "tag": "最新交易",
-                "link": "https://www.zhonglun.com"
+                "title": "点击查看中伦官网最新业绩 (自动同步暂缓)", 
+                "date": time.strftime("%Y-%m-%d"), 
+                "tag": "快速访问", 
+                "link": "https://www.zhonglun.com/news.html"
             }
         ]
-        with open('cases.json', 'w', encoding='utf-8') as f:
-            json.dump(fallback_data, f, ensure_ascii=False, indent=2)
+    else:
+        print(f"✅ 成功通过搜索获取 {len(cases)} 条数据！")
+
+    # 保存
+    with open('cases.json', 'w', encoding='utf-8') as f:
+        json.dump(cases, f, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
-    scrape_zhonglun()
+    scrape_via_search()
