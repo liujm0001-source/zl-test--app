@@ -22,7 +22,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install requests ddgs
+        pip install requests duckduckgo-search typing_extensions
 
     - name: Run scraper
       run: python scrape.py
