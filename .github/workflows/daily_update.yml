@@ -22,7 +22,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install requests beautifulsoup4 curl_cffi
+        pip install requests duckduckgo_search
 
     - name: Run scraper
       run: python scrape.py
